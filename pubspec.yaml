@@ -1,0 +1,15 @@
+name: skycast
+description: "App de inteligência climática e rotas seguras."
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.0           # Para falar com as APIs de Clima e Rota
+  geolocator: ^10.1.0    # Para pegar o GPS
+  flutter_map: ^6.1.0    # Para mostrar o mapa (OpenStreetMap)
+  latlong2: ^0.9.1       # Para cálculos de coordenadas
+  firebase_core: ^2.27.0 # Base do Firebase
