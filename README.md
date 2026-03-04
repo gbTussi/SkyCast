@@ -38,4 +38,4 @@ O SkyCast utiliza um algoritmo de decimação de coordenadas para otimizar o con
 
 1. **Clone este repositório:**
    ```bash
-   git clone [https://github.com/seu-usuario/SkyCast-app.git](https://github.com/seu-usuario/SkyCast-app.git)
+   git clone [https://github.com/seu-usuario/SkyCast.git](https://github.com/seu-usuario/SkyCast.git)
