@@ -13,3 +13,6 @@ dependencies:
   flutter_map: ^6.1.0    # Para mostrar o mapa (OpenStreetMap)
   latlong2: ^0.9.1       # Para cálculos de coordenadas
   firebase_core: ^2.27.0 # Base do Firebase
+
+flutter:
+  uses-material-design: true
