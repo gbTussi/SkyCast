@@ -1,0 +1,7 @@
+.dart_tool/
+build/
+.pub/
+.pub-cache/
+coverage/
+.env
+*.iml

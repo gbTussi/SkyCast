@@ -1,0 +1,214 @@
+openapi: 3.0.3
+info:
+  title: SkyCast Backend API
+  version: 1.0.0
+  description: API de proxy para geocoding, rota, clima e transito.
+servers:
+  - url: http://localhost:8081
+    description: Local
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Service health
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  service:
+                    type: string
+                    example: skycast-backend
+
+  /api/geocode:
+    get:
+      summary: Busca local por nome
+      parameters:
+        - in: query
+          name: name
+          required: true
+          schema:
+            type: string
+          description: Nome da cidade/local
+        - in: query
+          name: count
+          required: false
+          schema:
+            type: string
+            default: '1'
+        - in: query
+          name: lang
+          required: false
+          schema:
+            type: string
+            default: pt
+      responses:
+        '200':
+          description: Resposta do Open-Meteo geocoding
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Parametro obrigatorio ausente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/reverse:
+    get:
+      summary: Reverse geocoding por latitude e longitude
+      parameters:
+        - in: query
+          name: lat
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: lon
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: lang
+          required: false
+          schema:
+            type: string
+            default: pt
+      responses:
+        '200':
+          description: Resposta do Nominatim reverse geocoding
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Parametros obrigatorios ausentes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/route:
+    get:
+      summary: Rota entre dois pontos
+      parameters:
+        - in: query
+          name: fromLat
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: fromLon
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: toLat
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: toLon
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Resposta do OSRM route
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Parametros obrigatorios ausentes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/weather:
+    get:
+      summary: Clima atual, diario e horario
+      parameters:
+        - in: query
+          name: lat
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: lon
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: timezone
+          required: false
+          schema:
+            type: string
+            default: auto
+      responses:
+        '200':
+          description: Resposta do Open-Meteo forecast
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Parametros obrigatorios ausentes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/traffic:
+    get:
+      summary: Trafego em um ponto
+      parameters:
+        - in: query
+          name: lat
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: lon
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Resposta do TomTom flowSegmentData
+          content:
+            application/json:
+              schema:
+                type: object
+        '400':
+          description: Parametros obrigatorios ausentes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: TOMTOM_API_KEY nao configurada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          example: Parametros obrigatorios ausentes
+        detail:
+          type: string
+          nullable: true

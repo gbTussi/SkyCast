@@ -1,0 +1,12 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: skycast-backend
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8081
+      TOMTOM_API_KEY: ${TOMTOM_API_KEY:-YOUR_TOMTOM_API_KEY_HERE}
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
