@@ -1,40 +1,51 @@
-# 🌦️ SkyCast | Segurança Climática em Movimento
+# SkyCast
 
-**SkyCast** é um aplicativo inteligente desenvolvido em **Flutter** que redefine a experiência de viagem ao integrar geolocalização precisa com dados meteorológicos críticos. O foco do SkyCast é a **previsibilidade**: ele não apenas diz como está o tempo, mas como o clima estará em cada etapa do seu caminho.
+SkyCast e um app Flutter para planejamento de viagens com foco em clima no trajeto.
 
+O app calcula rota, estima passagem por cidades intermediarias e cruza ETA com previsao horaria para mostrar como o tempo deve estar em cada etapa da viagem.
 
+## O que esta implementado hoje
 
-## 🎯 O Problema
-A maioria dos aplicativos de GPS foca apenas no trânsito, ignorando que condições climáticas severas são responsáveis por grandes riscos e atrasos. O SkyCast resolve a fragmentação de dados ambientais, centralizando alertas e previsões de rota em uma interface única e intuitiva.
+- Planejamento de rota por origem e destino.
+- Mapa com rota usando OpenStreetMap (flutter_map).
+- Clima por cidade da rota com comparativo "agora x previsao no ponto".
+- Dados de transito por ponto da rota (TomTom), quando a chave esta configurada.
+- Login com Firebase (email/senha e Google).
+- Rotas favoritas e historico local (SharedPreferences).
+- Backend proprio em Dart (Shelf) para proxy das APIs externas.
+- Documentacao de API com Swagger em /docs.
 
-## ✨ Funcionalidades do MVP
+## Arquitetura resumida
 
-- **📍 Clima Hiperlocal:** Atualização automática baseada na posição atual do usuário.
-- **🛣️ Navegação Preditiva:** Planejamento de rotas com exibição do clima ponto a ponto, cruzando o horário de saída com a previsão meteorológica no trajeto.
-- **⚠️ Alertas em Tempo Real:** Monitoramento de riscos naturais e avisos da Defesa Civil via Geofencing.
-- **🔍 Central de Destinos:** Busca por localidades com dados sobre qualidade do ar, focos de queimadas e sazonalidade.
-- **📊 SkyCast Analytics:** Painel visual de exposição a riscos e histórico de rotas salvas para decisões futuras mais inteligentes.
+Frontend Flutter -> Backend SkyCast (Dart Shelf) -> APIs externas:
 
-## 🛠️ Stack Tecnológica
+- Open-Meteo Geocoding (busca de cidades)
+- Nominatim (reverse geocoding)
+- OSRM (rota)
+- Open-Meteo Forecast (clima)
+- TomTom Traffic (transito)
 
-- **Frontend:** [Flutter](https://flutter.dev/) (3.x)
-- **Linguagem:** Dart
-- **Estado:** Riverpod / BLoC
-- **Mapas:** [flutter_map](https://pub.dev/packages/flutter_map) (OpenStreetMap)
-- **Dados Climáticos:** [Open-Meteo API](https://open-meteo.com/) (Open Source)
-- **Roteamento:** [OSRM](http://project-osrm.org/)
+## Stack real do projeto
 
-## 🏗️ Arquitetura de Rota (Generalizada)
+- Flutter + Dart
+- go_router
+- flutter_map + OpenStreetMap
+- geolocator
+- http
+- Firebase Auth + Google Sign-In
+- SharedPreferences
+- Backend Dart com Shelf + shelf_router
+- Docker / Docker Compose para o backend
 
-O SkyCast utiliza um algoritmo de decimação de coordenadas para otimizar o consumo de dados:
-1. Recebe a polilinha da rota via OSRM.
-2. Seleciona *waypoints* estratégicos (ex: a cada 50km).
-3. Consulta a previsão horária para cada *waypoint* baseada no ETA (Estimated Time of Arrival).
-4. Renderiza marcadores climáticos dinâmicos sobre o mapa.
+## Estrutura
 
+- app Flutter: pasta raiz
+- backend Dart: [backend](backend)
+- compose do backend: [docker-compose.yml](docker-compose.yml)
 
+## Backend: como rodar com Docker
 
-## 🚀 Como Executar
+Requisitos:
 
 1. **Clone este repositório:**
    ```bash
