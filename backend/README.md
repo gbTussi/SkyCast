@@ -29,8 +29,11 @@ Servidor sobe em `http://127.0.0.1:8081` com o `.env` deste projeto.
 
 Na raiz do projeto (`C:/skycast`):
 
-1. Defina a variavel de ambiente da chave TomTom:
-	- PowerShell: `$env:TOMTOM_API_KEY="SUA_CHAVE_AQUI"`
+1. Configure o arquivo `.env` do backend:
+	- `cd backend`
+	- `copy .env.example .env`
+	- edite `.env` e defina `TOMTOM_API_KEY=SUA_CHAVE_AQUI`
+	- `cd ..`
 2. Suba o backend:
 	- `docker compose up -d --build`
 3. Verifique saude:
@@ -42,5 +45,5 @@ Para parar:
 
 ## Observacoes
 
-- A rota de transito usa `TOMTOM_API_KEY` via `.env` ou variavel de ambiente.
+- A rota de transito usa `TOMTOM_API_KEY` do arquivo `backend/.env`.
 - CORS habilitado para facilitar desenvolvimento local/web.
