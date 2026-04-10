@@ -1,0 +1,23 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "SkyCast (Flutter - TomTom)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "env": {
+        "TOMTOM_API_KEY": "na6EjNPLvvf2zIUmQgmm7pB9K812IWLK"
+      },
+      "toolArgs": [
+        "--dart-define=TOMTOM_API_KEY=${env:TOMTOM_API_KEY}"
+      ]
+    },
+    {
+      "name": "SkyCast (Flutter - sem transito)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart"
+    }
+  ]
+}

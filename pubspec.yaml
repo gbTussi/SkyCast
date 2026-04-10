@@ -10,6 +10,28 @@ dependencies:
     sdk: flutter
   http: ^1.2.0           # Para falar com as APIs de Clima e Rota
   geolocator: ^10.1.0    # Para pegar o GPS
+  go_router: ^14.8.1
   flutter_map: ^6.1.0    # Para mostrar o mapa (OpenStreetMap)
   latlong2: ^0.9.1       # Para cálculos de coordenadas
   firebase_core: ^2.27.0 # Base do Firebase
+  firebase_auth: ^4.20.0
+  google_sign_in: ^6.2.1
+  shared_preferences: ^2.2.3
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/icon/app_icon.png
+
+dev_dependencies:
+  flutter_launcher_icons: ^0.14.3
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon/app_icon.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/icon/app_icon.png"
+  adaptive_icon_foreground_inset: 10
+  min_sdk_android: 21
+  remove_alpha_ios: true
