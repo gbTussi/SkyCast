@@ -7,6 +7,18 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as io;
 import 'package:shelf_router/shelf_router.dart';
 
+const Duration _reverseCacheTtl = Duration(minutes: 30);
+
+final Map<String, ({DateTime createdAt, Map<String, dynamic> value})>
+    _reverseCache = {};
+
+String _reverseCacheKey(double lat, double lon, String lang, String zoom) {
+  // 3 casas decimais reduz volume de chamadas e segue suficiente para cidade.
+  final kLat = (lat * 1000).round() / 1000;
+  final kLon = (lon * 1000).round() / 1000;
+  return '$kLat,$kLon|$lang|$zoom';
+}
+
 Future<void> main() async {
   final env = dotenv.DotEnv(includePlatformEnvironment: true);
   try {
@@ -16,7 +28,7 @@ Future<void> main() async {
   }
   final port = int.tryParse(env['PORT'] ?? '') ?? 8080;
   final host = (env['HOST'] ?? '127.0.0.1').trim();
-  final tomTomKey = env['TOMTOM_API_KEY'] ?? '';
+  final tomTomKey = (env['TOMTOM_API_KEY'] ?? '').trim();
 
   final app = Router()
     ..get('/openapi.yaml', (Request req) async {
@@ -53,20 +65,63 @@ Future<void> main() async {
       final lat = qp['lat'];
       final lon = qp['lon'];
       final lang = qp['lang'] ?? 'pt';
+      final zoom = qp['zoom'] ?? '10';
       if (lat == null || lon == null) {
         return _json({'error': 'Parametros lat e lon sao obrigatorios'},
             status: 400);
+      }
+
+      final latN = double.tryParse(lat);
+      final lonN = double.tryParse(lon);
+      if (latN == null || lonN == null) {
+        return _json({'error': 'lat/lon invalidos'}, status: 400);
+      }
+
+      final cacheKey = _reverseCacheKey(latN, lonN, lang, zoom);
+      final cached = _reverseCache[cacheKey];
+      if (cached != null &&
+          DateTime.now().difference(cached.createdAt) <= _reverseCacheTtl) {
+        return _json(cached.value);
+      }
+
+      if (tomTomKey.isNotEmpty && !tomTomKey.startsWith('YOUR_')) {
+        final tomTomAddress = await _tryTomTomReverse(latN, lonN,
+            lang: lang, tomTomKey: tomTomKey);
+        if (tomTomAddress != null) {
+          _reverseCache[cacheKey] = (
+            createdAt: DateTime.now(),
+            value: tomTomAddress,
+          );
+          return _json(tomTomAddress);
+        }
       }
 
       final uri = Uri.https('nominatim.openstreetmap.org', '/reverse', {
         'lat': lat,
         'lon': lon,
         'format': 'json',
-        'zoom': '10',
+        'zoom': zoom,
         'accept-language': lang,
       });
 
-      return _proxyGet(uri, headers: {'User-Agent': 'SkyCastBackend/1.0'});
+      final nominatim = await _proxyGetWithRetry429(uri,
+          headers: {'User-Agent': 'SkyCastBackend/1.0'});
+
+      if (nominatim.statusCode == 200) {
+        try {
+          final parsed = jsonDecode(await nominatim.readAsString())
+              as Map<String, dynamic>?;
+          if (parsed != null) {
+            _reverseCache[cacheKey] = (
+              createdAt: DateTime.now(),
+              value: parsed,
+            );
+            return _json(parsed);
+          }
+        } catch (_) {}
+      }
+
+      return nominatim;
     })
     ..get('/api/route', (Request req) async {
       final qp = req.url.queryParameters;
@@ -80,14 +135,38 @@ Future<void> main() async {
             status: 400);
       }
 
-      final path = '/route/v1/driving/$fromLon,$fromLat;$toLon,$toLat';
-      final uri = Uri.https('router.project-osrm.org', path, {
-        'overview': 'full',
-        'geometries': 'geojson',
-        'steps': 'false',
-      });
+      // Tenta TomTom primeiro
+      final tomTomRoute = await _tryTomTomRoute(
+        fromLat: fromLat!,
+        fromLon: fromLon!,
+        toLat: toLat!,
+        toLon: toLon!,
+        tomTomKey: tomTomKey,
+      );
+      if (tomTomRoute != null) return _json(tomTomRoute);
 
-      return _proxyGet(uri);
+      // Fallback OSRM — timeout maior e trata erro explicitamente
+      try {
+        final path = '/route/v1/driving/$fromLon,$fromLat;$toLon,$toLat';
+        final uri = Uri.https('router.project-osrm.org', path, {
+          'overview': 'full',
+          'geometries': 'geojson',
+          'steps': 'false',
+          'alternatives': 'true',
+        });
+        final r = await http
+            .get(uri)
+            .timeout(const Duration(seconds: 20)); // ← era 15s via _proxyGet
+        if (r.statusCode != 200) {
+          return _json({'error': 'OSRM retornou ${r.statusCode}', 'routes': []},
+              status: 502);
+        }
+        return Response(r.statusCode,
+            body: r.body, headers: {'content-type': 'application/json'});
+      } catch (e) {
+        // Retorna routes vazio em vez de 502 — o Flutter lida com isso graciosamente
+        return _json({'code': 'Ok', 'routes': []});
+      }
     })
     ..get('/api/weather', (Request req) async {
       final qp = req.url.queryParameters;
@@ -123,9 +202,12 @@ Future<void> main() async {
         return _json({'error': 'Parametros lat e lon sao obrigatorios'},
             status: 400);
       }
-      if (tomTomKey.isEmpty) {
-        return _json({'error': 'TOMTOM_API_KEY nao configurada no backend'},
-            status: 500);
+      if (tomTomKey.isEmpty || tomTomKey.startsWith('YOUR_')) {
+        return _json({
+          'error': 'TOMTOM_API_KEY nao configurada no backend',
+          'detail':
+              'Defina TOMTOM_API_KEY valida no ambiente do container/servidor.'
+        }, status: 500);
       }
 
       final uri = Uri.https(
@@ -205,6 +287,21 @@ Future<Response> _proxyGet(Uri uri, {Map<String, String>? headers}) async {
   }
 }
 
+Future<Response> _proxyGetWithRetry429(Uri uri,
+    {Map<String, String>? headers}) async {
+  const retryDelays = [Duration(milliseconds: 700), Duration(seconds: 2)];
+
+  for (int attempt = 0; attempt <= retryDelays.length; attempt++) {
+    final res = await _proxyGet(uri, headers: headers);
+    if (res.statusCode != 429 || attempt == retryDelays.length) {
+      return res;
+    }
+    await Future.delayed(retryDelays[attempt]);
+  }
+
+  return _json({'error': 'Falha ao consultar servico externo'}, status: 502);
+}
+
 Response _json(Map<String, dynamic> body, {int status = 200}) {
   return Response(
     status,
@@ -252,3 +349,143 @@ String _swaggerHtml() => '''
   </body>
 </html>
 ''';
+
+Future<Map<String, dynamic>?> _tryTomTomReverse(
+  double lat,
+  double lon, {
+  required String lang,
+  required String tomTomKey,
+}) async {
+  try {
+    final uri =
+        Uri.https('api.tomtom.com', '/search/2/reverseGeocode/$lat,$lon.json', {
+      'key': tomTomKey,
+      'language': lang,
+      'radius': '12000',
+      'returnSpeedLimit': 'false',
+      'allowFreeformNewline': 'false',
+    });
+
+    final res = await http.get(uri).timeout(const Duration(seconds: 8));
+    if (res.statusCode != 200) return null;
+
+    final body = jsonDecode(res.body) as Map<String, dynamic>?;
+    final addresses = (body?['addresses'] as List?) ?? const [];
+    if (addresses.isEmpty) return null;
+
+    final first = addresses.first as Map<String, dynamic>?;
+    final address = first?['address'] as Map<String, dynamic>?;
+    if (address == null) return null;
+
+    final municipality = (address['municipality'] as String?)?.trim();
+    final subMunicipality =
+        (address['municipalitySubdivision'] as String?)?.trim();
+    final country = (address['country'] as String?)?.trim() ?? 'Brasil';
+    final city = municipality?.isNotEmpty == true
+        ? municipality!
+        : (subMunicipality?.isNotEmpty == true ? subMunicipality! : null);
+    if (city == null || city.isEmpty) return null;
+
+    // Mantem formato semelhante ao Nominatim para nao quebrar o Flutter.
+    return {
+      'lat': '$lat',
+      'lon': '$lon',
+      'address': {
+        'city': city,
+        'municipality': municipality ?? city,
+        'country': country,
+      }
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<Map<String, dynamic>?> _tryTomTomRoute({
+  required String fromLat,
+  required String fromLon,
+  required String toLat,
+  required String toLon,
+  required String tomTomKey,
+}) async {
+  if (tomTomKey.isEmpty || tomTomKey.startsWith('YOUR_')) {
+    return null;
+  }
+
+  try {
+    final path =
+        '/routing/1/calculateRoute/$fromLat,$fromLon:$toLat,$toLon/json';
+    final uri = Uri.https('api.tomtom.com', path, {
+      'traffic': 'true',
+      'travelMode': 'car',
+      'routeType': 'fastest',
+      'computeBestOrder': 'false',
+      'maxAlternatives': '2',
+      'language': 'pt-BR',
+      'sectionType': 'traffic',
+      'key': tomTomKey,
+    });
+
+    final res = await http.get(uri).timeout(const Duration(seconds: 12));
+    if (res.statusCode != 200) return null;
+
+    final body = jsonDecode(res.body) as Map<String, dynamic>?;
+    final routes = (body?['routes'] as List?) ?? const [];
+    if (routes.isEmpty) return null;
+
+    final normalized = <Map<String, dynamic>>[];
+
+    for (final raw in routes) {
+      final route = raw as Map<String, dynamic>?;
+      if (route == null) continue;
+
+      final summary = route['summary'] as Map<String, dynamic>?;
+      final legs = (route['legs'] as List?) ?? const [];
+      if (summary == null || legs.isEmpty) continue;
+
+      final coords = <List<double>>[];
+      for (final legRaw in legs) {
+        final leg = legRaw as Map?;
+        final points = (leg?['points'] as List?) ?? const [];
+        for (final p in points) {
+          final m = p as Map?;
+          final lat = (m?['latitude'] as num?)?.toDouble();
+          final lon = (m?['longitude'] as num?)?.toDouble();
+          if (lat == null || lon == null) continue;
+          final current = [lon, lat];
+          if (coords.isEmpty ||
+              coords.last[0] != current[0] ||
+              coords.last[1] != current[1]) {
+            coords.add(current);
+          }
+        }
+      }
+
+      if (coords.length < 2) continue;
+
+      final lengthMeters = (summary['lengthInMeters'] as num?)?.toDouble() ?? 0;
+      final travelSeconds =
+          (summary['travelTimeInSeconds'] as num?)?.toDouble() ?? 0;
+      final trafficSeconds =
+          (summary['trafficDelayInSeconds'] as num?)?.toDouble() ?? 0;
+
+      normalized.add({
+        'distance': lengthMeters,
+        'duration': travelSeconds,
+        'trafficDelayInSeconds': trafficSeconds,
+        'geometry': {
+          'coordinates': coords,
+        }
+      });
+    }
+
+    if (normalized.isEmpty) return null;
+
+    return {
+      'code': 'Ok',
+      'routes': normalized,
+    };
+  } catch (_) {
+    return null;
+  }
+}

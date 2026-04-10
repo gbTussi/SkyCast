@@ -276,7 +276,12 @@ class RouteCity {
 class RoadRouteData {
   final List<(double, double)> points;
   final double? durationSeconds;
-  const RoadRouteData({required this.points, this.durationSeconds});
+  final double? trafficDurationSeconds; // ← novo campo
+  const RoadRouteData({
+    required this.points,
+    this.durationSeconds,
+    this.trafficDurationSeconds,
+  });
 }
 
 /// Sugestão de localização retornada pelo autocomplete de geocoding.
@@ -492,6 +497,21 @@ String _formatDuration(double seconds) {
   return '${h}h ${min}min';
 }
 
+double _trafficAdjustedDurationSeconds(
+    double baseDurationSeconds, List<RouteCity> cities) {
+  final ratios = cities
+      .map((c) => c.trafficFlowRatio)
+      .whereType<double>()
+      .where((r) => r > 0)
+      .map((r) => r.clamp(0.30, 1.0))
+      .toList();
+
+  if (ratios.isEmpty) return baseDurationSeconds;
+
+  final avgRatio = ratios.reduce((a, b) => a + b) / ratios.length;
+  return baseDurationSeconds / avgRatio;
+}
+
 String _formatEtaFromMinutes(int? totalMinutes) {
   if (totalMinutes == null) return '--';
   if (totalMinutes <= 59) return '$totalMinutes min';
@@ -616,18 +636,40 @@ Future<RoadRouteData> _fetchRoadRouteData(
     if (r.statusCode != 200) return const RoadRouteData(points: []);
 
     final body = jsonDecode(r.body) as Map<String, dynamic>?;
-    final first =
-        (body?['routes'] as List?)?.firstOrNull as Map<String, dynamic>?;
-    if (first == null) return const RoadRouteData(points: []);
+    final routes = (body?['routes'] as List?) ?? const [];
+    if (routes.isEmpty) return const RoadRouteData(points: []);
 
-    final coords = (first['geometry'] as Map?)?['coordinates'] as List?;
-    if (coords == null || coords.length < 2) {
-      return RoadRouteData(
-          points: const [],
-          durationSeconds: (first['duration'] as num?)?.toDouble());
+    Map<String, dynamic>? best;
+    double? bestDuration;
+    double? bestDistance;
+
+    for (final raw in routes) {
+      final route = raw as Map<String, dynamic>?;
+      if (route == null) continue;
+      final duration = (route['duration'] as num?)?.toDouble();
+      final distance = (route['distance'] as num?)?.toDouble();
+      if (duration == null) continue;
+
+      final betterByDuration = bestDuration == null || duration < bestDuration;
+      final tieOnDuration = bestDuration != null && duration == bestDuration;
+      final betterByDistance = tieOnDuration &&
+          distance != null &&
+          (bestDistance == null || distance < bestDistance);
+
+      if (betterByDuration || betterByDistance) {
+        best = route;
+        bestDuration = duration;
+        bestDistance = distance;
+      }
     }
 
-    // GeoJSON retorna [lng, lat] — invertemos para (lat, lng)
+    if (best == null) return const RoadRouteData(points: []);
+
+    final coords = (best['geometry'] as Map?)?['coordinates'] as List?;
+    if (coords == null || coords.length < 2) {
+      return RoadRouteData(points: const [], durationSeconds: bestDuration);
+    }
+
     final points = coords
         .map((p) {
           final pair = p as List;
@@ -638,9 +680,7 @@ Future<RoadRouteData> _fetchRoadRouteData(
         .whereType<(double, double)>()
         .toList();
 
-    return RoadRouteData(
-        points: points,
-        durationSeconds: (first['duration'] as num?)?.toDouble());
+    return RoadRouteData(points: points, durationSeconds: bestDuration);
   } catch (_) {
     return const RoadRouteData(points: []);
   }
@@ -744,11 +784,8 @@ List<(double, double)> _samplePolylineByCount(
 /// Determina quantos pontos de amostragem usar de acordo com a distância total.
 /// Rotas mais longas recebem mais pontos para melhor cobertura intermediária.
 int _sampleCount(double distKm) {
-  if (distKm < 50) return 6;
-  if (distKm < 150) return 10;
-  if (distKm < 400) return 14;
-  if (distKm < 800) return 20;
-  return 26;
+  final bySpacing = (distKm / 22).ceil() + 1;
+  return bySpacing.clamp(6, 24);
 }
 
 // =============================================================================
@@ -768,7 +805,7 @@ int _sampleCount(double distKm) {
 /// Intervalo mínimo entre requisições ao Nominatim (política de uso: 1 req/s).
 const _nominatimMinInterval = Duration(milliseconds: 1200);
 
-/// Cache de resultados por coordenada aproximada (3 casas decimais ≈ 111 m).
+/// Cache de resultados por coordenada aproximada (2 casas decimais ≈ 1.1 km).
 final Map<String, RouteCity?> _nearestCityCache = {};
 
 /// Fila serial que garante no máximo 1 requisição simultânea ao Nominatim.
@@ -776,7 +813,7 @@ Future<void> _nominatimQueue = Future.value();
 DateTime _lastNominatimRequestAt = DateTime.fromMillisecondsSinceEpoch(0);
 
 String _coordCacheKey(double lat, double lng) =>
-    '${(lat * 1000).round() / 1000},${(lng * 1000).round() / 1000}';
+    '${(lat * 100).round() / 100},${(lng * 100).round() / 100}';
 
 /// Enfileira uma requisição ao Nominatim respeitando o rate limit de 1 req/s.
 Future<T> _queueNominatimRequest<T>(Future<T> Function() request) {
@@ -810,35 +847,42 @@ Future<RouteCity?> _nearestCity(double lat, double lng) async {
 /// Chamada bruta ao Nominatim. Tenta zoom 10 → 8 → 6 como fallback.
 Future<RouteCity?> _reverseGeocodeCity(double lat, double lng) async {
   for (final zoom in ['10', '8', '6']) {
-    try {
-      final uri = _backendUri('/api/reverse', {
-        'lat': lat.toString(),
-        'lon': lng.toString(),
-        'zoom': zoom,
-        'lang': 'pt',
-      });
-      final res = await http.get(uri).timeout(const Duration(seconds: 8));
-      if (res.statusCode != 200) continue;
-      final data = jsonDecode(res.body) as Map<String, dynamic>?;
-      final address = data?['address'] as Map<String, dynamic>?;
-      if (address == null) continue;
-      // Prioridade de campos: city > town > village > municipality
-      final name = address['city'] as String? ??
-          address['town'] as String? ??
-          address['village'] as String? ??
-          address['municipality'] as String?;
-      if (name == null) continue;
-      return RouteCity(
-        city: name,
-        country: address['country'] as String? ?? 'Brasil',
-        lat: double.tryParse(data?['lat'] as String? ?? '') ?? lat,
-        lng: double.tryParse(data?['lon'] as String? ?? '') ?? lng,
-        temperature: 0,
-        condition: WeatherCondition.cloudy,
-        description: name,
-      );
-    } catch (_) {
-      continue;
+    for (int attempt = 0; attempt < 3; attempt++) {
+      try {
+        final uri = _backendUri('/api/reverse', {
+          'lat': lat.toString(),
+          'lon': lng.toString(),
+          'zoom': zoom,
+          'lang': 'pt',
+        });
+        final res = await http.get(uri).timeout(const Duration(seconds: 8));
+        if (res.statusCode == 429) {
+          await Future.delayed(Duration(milliseconds: 800 * (attempt + 1)));
+          continue;
+        }
+        if (res.statusCode != 200) break;
+
+        final data = jsonDecode(res.body) as Map<String, dynamic>?;
+        final address = data?['address'] as Map<String, dynamic>?;
+        if (address == null) break;
+        // Prioridade de campos: city > town > village > municipality
+        final name = address['city'] as String? ??
+            address['town'] as String? ??
+            address['village'] as String? ??
+            address['municipality'] as String?;
+        if (name == null) break;
+        return RouteCity(
+          city: name,
+          country: address['country'] as String? ?? 'Brasil',
+          lat: double.tryParse(data?['lat'] as String? ?? '') ?? lat,
+          lng: double.tryParse(data?['lon'] as String? ?? '') ?? lng,
+          temperature: 0,
+          condition: WeatherCondition.cloudy,
+          description: name,
+        );
+      } catch (_) {
+        break;
+      }
     }
   }
   return null;
@@ -884,22 +928,40 @@ Future<List<RouteCity>> _getRouteCities(String from, String to) async {
       ? _samplePolylineByCount(rr, n)
       : _interpolatePoints(oLat, oLng, dLat, dLng, n);
 
-  // 4. Reverse geocoding de cada ponto amostrado (serializado com rate-limit)
-  final raw = <RouteCity>[];
-  for (final p in pts) {
-    final city = await _nearestCity(p.$1, p.$2);
-    if (city != null) raw.add(city);
+  Future<List<RouteCity>> _collectUniqueCities(
+      List<(double, double)> samplePoints) async {
+    final raw = <RouteCity>[];
+    for (final p in samplePoints) {
+      final city = await _nearestCity(p.$1, p.$2);
+      if (city != null) raw.add(city);
+    }
+
+    final seen = <String>{};
+    final unique = <RouteCity>[];
+    for (final city in raw) {
+      if (seen.contains(city.city)) continue;
+      if (unique
+          .any((e) => _distanceKm(e.lat, e.lng, city.lat, city.lng) < 8.0)) {
+        continue;
+      }
+      seen.add(city.city);
+      unique.add(city);
+    }
+    return unique;
   }
 
-  // 5. Remover duplicatas por nome e por proximidade (< 8 km)
-  final seen = <String>{};
-  final unique = <RouteCity>[];
-  for (final city in raw) {
-    if (seen.contains(city.city)) continue;
-    if (unique.any((e) => _distanceKm(e.lat, e.lng, city.lat, city.lng) < 8.0))
-      continue;
-    seen.add(city.city);
-    unique.add(city);
+  // 4. Reverse geocoding dos pontos amostrados
+  var unique = await _collectUniqueCities(pts);
+
+  // 5. Segunda passada adaptativa para rotas longas com poucas cidades detectadas
+  final minExpectedCities = ((distKm / 30).ceil() + 2).clamp(4, 14);
+  if (rr.length > 1 && unique.length < minExpectedCities) {
+    final denserCount = (max(n + 6, minExpectedCities * 2)).clamp(10, 36);
+    final denserPts = _samplePolylineByCount(rr, denserCount);
+    final denserUnique = await _collectUniqueCities(denserPts);
+    if (denserUnique.length > unique.length) {
+      unique = denserUnique;
+    }
   }
 
   // 6. Fallback: se nenhuma cidade foi encontrada, retorna só origem e destino
@@ -2235,6 +2297,7 @@ class _RouteScreenState extends State<RouteScreen> {
   Map<String, CityStatus> _cityStatuses = {};
   int _currentCityIndex = 0;
   DateTime? _tripStartedAt;
+  DateTime? _plannedDepartureAt;
 
   // ── Favoritos e histórico ─────────────────────────────────────────────────
   List<FavoriteRoute> _favoriteRoutes = [];
@@ -2418,6 +2481,7 @@ class _RouteScreenState extends State<RouteScreen> {
       _positionSub?.cancel();
       _positionSub = null;
       _trafficLoading = false;
+      _plannedDepartureAt = dep;
     });
     final cities = await _getRouteCities(_origin, _destination);
     final routeData = await _resolveRouteDataByNames(_origin, _destination);
@@ -2456,8 +2520,39 @@ class _RouteScreenState extends State<RouteScreen> {
       _routeDurationSeconds = null;
       _showCitySelector = true;
       _trafficLoading = false;
+      _plannedDepartureAt = null;
     });
     await _initializeRoute();
+  }
+
+  List<RouteCity> _recalculateCitiesEta(
+    List<RouteCity> cities, {
+    required DateTime departureTime,
+    required double effectiveDurationSeconds,
+  }) {
+    if (cities.isEmpty) return cities;
+    if (cities.length == 1) {
+      return [
+        cities.first.copyWith(passTime: departureTime, etaMinutesFromStart: 0)
+      ];
+    }
+
+    final cumKm = <double>[0.0];
+    for (int i = 1; i < cities.length; i++) {
+      cumKm.add(cumKm.last +
+          _distanceKm(cities[i - 1].lat, cities[i - 1].lng, cities[i].lat,
+              cities[i].lng));
+    }
+    final totalKm = cumKm.last;
+
+    return List<RouteCity>.generate(cities.length, (i) {
+      final ratio = totalKm <= 0 ? i / (cities.length - 1) : cumKm[i] / totalKm;
+      final sec = (effectiveDurationSeconds * ratio).round();
+      return cities[i].copyWith(
+        passTime: departureTime.add(Duration(seconds: sec)),
+        etaMinutesFromStart: (sec / 60).round(),
+      );
+    });
   }
 
   Future<void> _loadTrafficOverlay() async {
@@ -2498,8 +2593,27 @@ class _RouteScreenState extends State<RouteScreen> {
     }));
 
     if (!mounted) return;
+    final baseDurationSeconds = _routeDurationSeconds ??
+        (() {
+          final first = updated.isNotEmpty ? updated.first.passTime : null;
+          final last = updated.isNotEmpty ? updated.last.passTime : null;
+          if (first == null || last == null) return null;
+          return last.difference(first).inSeconds.toDouble();
+        })();
+
+    final adjustedDurationSeconds = baseDurationSeconds == null
+        ? null
+        : _trafficAdjustedDurationSeconds(baseDurationSeconds, updated);
+
+    final withAdjustedEta =
+        adjustedDurationSeconds != null && _plannedDepartureAt != null
+            ? _recalculateCitiesEta(updated,
+                departureTime: _plannedDepartureAt!,
+                effectiveDurationSeconds: adjustedDurationSeconds)
+            : updated;
+
     setState(() {
-      _allCities = updated;
+      _allCities = withAdjustedEta;
       _trafficLoading = false;
     });
   }
@@ -3319,6 +3433,12 @@ class _RouteScreenState extends State<RouteScreen> {
 
   Widget _buildRouteDisplay() {
     final dst = _allCities.isNotEmpty ? _allCities.last : null;
+    final trafficAdjustedDuration = _routeDurationSeconds == null
+        ? null
+        : _trafficAdjustedDurationSeconds(_routeDurationSeconds!, _allCities);
+    final hasTrafficData = _allCities
+        .any((c) => c.trafficFlowRatio != null && c.trafficFlowRatio! > 0);
+    final arrivalPreview = dst?.passTime;
     return Column(children: [
       _rRow(Icons.trip_origin, const Color(0xFF2563EB), 'Origem', _origin),
       Padding(
@@ -3336,7 +3456,7 @@ class _RouteScreenState extends State<RouteScreen> {
           ])),
       _rRow(
           Icons.location_on, const Color(0xFF06B6D4), 'Destino', _destination),
-      if (_routeDurationSeconds != null || dst?.passTime != null)
+      if (trafficAdjustedDuration != null || arrivalPreview != null)
         Container(
             margin: const EdgeInsets.only(top: 12),
             padding: const EdgeInsets.all(10),
@@ -3345,23 +3465,28 @@ class _RouteScreenState extends State<RouteScreen> {
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: const Color(0xFFBFDBFE))),
             child: Column(children: [
-              if (_routeDurationSeconds != null)
+              if (trafficAdjustedDuration != null)
                 Row(children: [
                   const Icon(Icons.route, size: 16, color: Color(0xFF1D4ED8)),
                   const SizedBox(width: 6),
                   Text(
-                      'Duração estimada: ${_formatDuration(_routeDurationSeconds!)}',
+                      hasTrafficData
+                          ? 'Duração estimada com trânsito: ${_formatDuration(trafficAdjustedDuration)}'
+                          : 'Duração estimada: ${_formatDuration(trafficAdjustedDuration)}',
                       style: const TextStyle(
                           fontSize: 12,
                           color: Color(0xFF1E3A8A),
                           fontWeight: FontWeight.w600))
                 ]),
-              if (dst?.passTime != null) ...[
-                if (_routeDurationSeconds != null) const SizedBox(height: 6),
+              if (arrivalPreview != null) ...[
+                if (trafficAdjustedDuration != null) const SizedBox(height: 6),
                 Row(children: [
                   const Icon(Icons.flag, size: 16, color: Color(0xFF065F46)),
                   const SizedBox(width: 6),
-                  Text('Chegada prevista: ${_formatDateHour(dst!.passTime)}',
+                  Text(
+                      hasTrafficData
+                          ? 'Chegada prevista com trânsito: ${_formatDateHour(arrivalPreview)}'
+                          : 'Chegada prevista: ${_formatDateHour(arrivalPreview)}',
                       style: const TextStyle(
                           fontSize: 12,
                           color: Color(0xFF065F46),
@@ -3373,9 +3498,17 @@ class _RouteScreenState extends State<RouteScreen> {
       if (!_tripStarted)
         Column(children: [
           OutlinedButton.icon(
-              onPressed: () => setState(() => _isEditingRoute = true),
-              icon: const Icon(Icons.edit, size: 16),
-              label: const Text('Editar Rota'),
+              onPressed: () {
+                _originCtrl.text = _origin;
+                _destinationCtrl.text = _destination;
+                setState(() {
+                  _showOriginSuggestions = false;
+                  _showDestinationSuggestions = false;
+                  _isEditingRoute = true;
+                });
+              },
+              icon: const Icon(Icons.alt_route, size: 16),
+              label: const Text('Procurar outra rota'),
               style: OutlinedButton.styleFrom(
                   minimumSize: const Size(double.infinity, 44),
                   shape: RoundedRectangleBorder(
@@ -3898,14 +4031,6 @@ class _RouteScreenState extends State<RouteScreen> {
                                                         fontSize: 10.5,
                                                         color:
                                                             Color(0xFF334155))),
-                                                SizedBox(height: 8),
-                                                Text(
-                                                    'Trânsito consultado via backend.',
-                                                    textAlign: TextAlign.center,
-                                                    style: TextStyle(
-                                                        fontSize: 12,
-                                                        color:
-                                                            Color(0xFF9CA3AF))),
                                               ])))),
                           ]))));
   }

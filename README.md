@@ -49,10 +49,13 @@ Requisitos:
 
 - Docker Desktop instalado e em execucao.
 
-1. Na raiz do projeto, defina a chave TomTom no terminal atual (PowerShell):
+1. Configure a chave TomTom no arquivo [backend/.env](backend/.env):
 
 ```powershell
-$env:TOMTOM_API_KEY="SUA_CHAVE_TOMTOM"
+cd backend
+copy .env.example .env
+# edite backend/.env e defina TOMTOM_API_KEY=SUA_CHAVE_TOMTOM
+cd ..
 ```
 
 2. Suba o backend:
@@ -82,7 +85,7 @@ docker compose down
 Observacoes:
 
 - O compose expoe o backend na porta 8081.
-- Sem TOMTOM_API_KEY, o endpoint /api/traffic retorna erro 500.
+- Sem TOMTOM_API_KEY valida em [backend/.env](backend/.env), os endpoints TomTom podem falhar e o /api/route pode cair em fallback.
 
 ## Backend: rodar sem Docker (opcional)
 
